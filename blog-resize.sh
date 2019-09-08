@@ -30,8 +30,8 @@ if [[ "${ECS_SERVICE_DETAIL,,}" == *"error"* || "${ECS_SERVICE_DETAIL,,}" == *"f
 	Error_Log "Error describe ECS Service. Response: ${ECS_SERVICE_DETAIL}"
 fi
 
-ECS_SERVICE_TAG=$(echo $ECS_SERVICE_DETAIL | jq '.services[].tags')
-ECS_INITIAL_COUNT=$(echo $ECS_SERVICE_TAG | jq 'select(.Name=="INITIAL_COUNT")')
+ECS_SERVICE_TAG=$(aws ecs list-tags-for-resource --resource-arn $(echo $ECS_SERVICE_DETAIL | jq -r '.services[].serviceArn')2>&1) 
+ECS_INITIAL_COUNT=$(echo $ECS_SERVICE_TAG | jq 'select(.Name=="INITIAL_COUNT") | .Value')
 if [[ "${ECS_INITIAL_COUNT,,}" == *"invalid"* ]]; then
 	Error_Log "Error getting ECS Service Tag. Response: ${ECS_SERVICE_DETAIL}"
 fi
