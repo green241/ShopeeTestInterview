@@ -9,12 +9,17 @@ Parameters:
     Description: ARN of ECS Cluster
   WordpressImage:
     Type: String
+    Default: docker.io/library/wordpress:5.2.3-php7.2-fpm-alpine
+    Description: URL of the image that will to be used to create ECS Task
   DatabaseHost:
     Type: String
     Description: Wordpress database FQDN. It will create a new RDS if this parameter is empty.
   DatabaseSubnetId:
     Type: List<AWS::EC2::Subnet::Id>
     Description: List of subnet Id for the Database. For multiple Subnet, fill it with comma delimitation.
+  InitialTaskCount: 
+    Type: Number
+    Description: Initial desired count for Wordpress ECS Task
 
 Conditions:
   NoExistingEcsCluster: !Equals [!Ref EcsCluster, ""]
@@ -117,13 +122,17 @@ Resources:
 
   WordpressECSService:
     Type: AWS::ECS::Service
+    DependsOn: WordpressLBListener
     Properties:
+      Tags: 
+        - Key: INITIAL_COUNT
+          Value: !Ref InitialTaskCount
       Cluster: !Ref ECSCluster
       LaunchType: FARGATE
       DeploymentConfiguration: 
         MaximumPercent: 200
         MinimumHealthyPercent: 100
-      DesiredCount: 2
+      DesiredCount: !Ref InitialTaskCount
       HealthCheckGracePeriodSeconds: "300"
       LoadBalancers:
         - ContainerName: "wordpress"
@@ -145,12 +154,20 @@ Resources:
       DBName: WordpressDatabase
       MasterUsername: wordpress_user
       MasterUserPassword: '{{resolve:ssm:wordpress_db_password:1}}'
-      AllocatedStorage: 100GB
+      AllocatedStorage: 100
       DBInstanceClass: db.t3.medium 
       DBSecurityGroups:
         - !Ref WordpressDBSecurityGroup
-      DBSubnetGroupName: !Ref DatabaseSubnetId
+      DBSubnetGroupName: !Ref WordpressDBSubnetGroupName
 
+      Engine: MySQL
+
+  WordpressDBSubnetGroupName:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnet Group Description for Wordpress RDS
+      SubnetIds: !Ref DatabaseSubnetId
+  
   WordpressDBSecurityGroup:
     Condition: NoExistingDB
     Type: AWS::RDS::DBSecurityGroup
@@ -197,6 +214,7 @@ Resources:
     Properties:
       Port: 80
       Protocol: HTTP
+      TargetType: ip
       VpcId: !Ref VpcId
 
   WordpressLBListener:
