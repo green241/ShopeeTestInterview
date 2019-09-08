@@ -51,6 +51,12 @@ Resources:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
 
+  WordpressECSLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties: 
+      LogGroupName: EcsClusterLogs
+      RetentionInDays: 30
+
   WordpressECSTaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
@@ -87,7 +93,7 @@ Resources:
             - Name: WORDPRESS_DB_HOST
               Value: !If
                 - NoExistingDB
-                - !Sub "arn:aws:rds:${AWS::Region}:${AWS::AccountId}:db:WordpressDatabase"
+                - !GetAtt WordpressDB.Endpoint.Address
                 - !Ref DatabaseHost
             - Name: WORDPRESS_DB_USER
               Value: wordpress_user
@@ -163,7 +169,6 @@ Resources:
       DBSecurityGroups:
         - !Ref WordpressDBSecurityGroup
       DBSubnetGroupName: !Ref WordpressDBSubnetGroupName
-
       Engine: MySQL
 
   WordpressDBSubnetGroupName:
