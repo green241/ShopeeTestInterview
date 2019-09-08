@@ -1,0 +1,210 @@
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  ECSSubnetId:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: List of subnet Id for the ECS Cluster. For multiple Subnet, fill it with comma delimitation.
+  EcsCluster:
+    Type: String
+    Description: ARN of ECS Cluster
+  WordpressImage:
+    Type: String
+  DatabaseHost:
+    Type: String
+    Description: Wordpress database FQDN. It will create a new RDS if this parameter is empty.
+  DatabaseSubnetId:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: List of subnet Id for the Database. For multiple Subnet, fill it with comma delimitation.
+
+Conditions:
+  NoExistingEcsCluster: !Equals [!Ref EcsCluster, ""]
+  NoExistingDB: !Equals [!Ref DatabaseHost, ""]
+  UseExistingEcsCluster: !Not
+    - !Equals [!Ref EcsCluster, ""]
+Resources:
+  ## Creating ECS Part ##
+  ECSCluster:
+    Condition: NoExistingEcsCluster
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: EcsCluster
+
+  WordpressECSTaskDefinitionRole:
+    Type: AWS::IAM::Role
+    Properties: 
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - 
+            Effect: "Allow"
+            Principal: 
+              Service: 
+                - "ecs.amazonaws.com"
+            Action: 
+              - "sts:AssumeRole"
+      Path: "/"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  WordpressECSTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: "wordpress"
+      RequiresCompatibilities: 
+        - FARGATE
+      Cpu: "512"
+      Memory: "2GB" 
+      NetworkMode: awsvpc
+      Volumes: 
+        - Name: default_volumes
+          Host: {}
+      ExecutionRoleArn: !Ref  WordpressECSTaskDefinitionRole
+      ContainerDefinitions: 
+        -
+          Name: "wordpress"
+          Image: !Ref WordpressImage
+          Cpu: "256"
+          Memory: "1024"
+          Essential: "true"
+          PortMappings:
+            - ContainerPort: "80"
+              Protocol: TCP
+          # MountPoints:
+          #   - SourceVolume: default_volumes
+          #     ContainerPath: 
+          LogConfiguration:
+            LogDriver: awslogs
+            Options: 
+                awslogs-group: EcsClusterLogs
+                awslogs-region: ap-southeast-1
+                awslogs-stream-prefix: wordpress
+          Environment:
+            - Name: WORDPRESS_DB_HOST
+              Value: !If
+                - NoExistingDB
+                - !Sub "arn:aws:rds:${AWS::Region}:${AWS::AccountId}:db:WordpressDatabase"
+                - !Ref DatabaseHost
+            - Name: WORDPRESS_DB_USER
+              Value: wordpress_user
+            - Name: WORDPRESS_DB_PASSWORD
+              Value: '{{resolve:ssm:wordpress_db_password:1}}'
+            - Name: WORDPRESS_DB_NAME
+              Value: wordpress
+  
+  WordpressECSServiceSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties: 
+      GroupDescription: Security Group for ECS Service
+      SecurityGroupIngress:
+        - SourceSecurityGroupId: !Ref WordpressLBSecurityGroup
+          FromPort: 80
+          ToPort: 80
+          IpProtocol: TCP
+      SecurityGroupEgress:
+        - CidrIp: 10.0.0.0/8
+          FromPort: 3306
+          ToPort: 3306
+          IpProtocol: TCP
+        - CidrIp: 172.16.0.0/12
+          FromPort: 3306
+          ToPort: 3306
+          IpProtocol: TCP
+        - CidrIp: 192.168.0.0/16
+          FromPort: 3306
+          ToPort: 3306
+          IpProtocol: TCP
+      VpcId: !Ref VpcId
+
+  WordpressECSService:
+    Type: AWS::ECS::Service
+    Properties:
+      Cluster: !Ref ECSCluster
+      LaunchType: FARGATE
+      DeploymentConfiguration: 
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+      DesiredCount: 2
+      HealthCheckGracePeriodSeconds: "300"
+      LoadBalancers:
+        - ContainerName: "wordpress"
+          ContainerPort: "80"
+          TargetGroupArn: !Ref WordpressLBTargetGroup
+            
+      TaskDefinition: !Ref WordpressECSTaskDefinition
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          SecurityGroups:
+            - !Ref WordpressECSServiceSG
+          Subnets: !Ref ECSSubnetId
+
+  ## Creating Database ##
+  WordpressDB:
+    Condition: NoExistingDB
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBName: WordpressDatabase
+      MasterUsername: wordpress_user
+      MasterUserPassword: '{{resolve:ssm:wordpress_db_password:1}}'
+      AllocatedStorage: 100GB
+      DBInstanceClass: db.t3.medium 
+      DBSecurityGroups:
+        - !Ref WordpressDBSecurityGroup
+      DBSubnetGroupName: !Ref DatabaseSubnetId
+
+  WordpressDBSecurityGroup:
+    Condition: NoExistingDB
+    Type: AWS::RDS::DBSecurityGroup
+    Properties:
+      GroupDescription: Security Group for Wordpress RDS
+      DBSecurityGroupIngress:
+        - EC2SecurityGroupId: !Ref WordpressECSServiceSG
+      EC2VpcId: !Ref VpcId
+
+  ## Createing Load Balancer ##
+  WordpressLBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security Group For Wordpress ALB 
+      SecurityGroupIngress:
+        - CidrIp: 0.0.0.0/0
+          FromPort: 80
+          ToPort: 80
+          IpProtocol: TCP
+      SecurityGroupEgress:
+        - CidrIp: 10.0.0.0/8
+          FromPort: 80
+          ToPort: 80
+          IpProtocol: TCP
+        - CidrIp: 172.16.0.0/12
+          FromPort: 80
+          ToPort: 80
+          IpProtocol: TCP
+        - CidrIp: 192.168.0.0/16
+          FromPort: 80
+          ToPort: 80
+          IpProtocol: TCP
+      VpcId: !Ref VpcId
+  
+  WordpressLB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Subnets: !Ref ECSSubnetId
+      SecurityGroups: 
+        - !Ref WordpressLBSecurityGroup
+
+  WordpressLBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Port: 80
+      Protocol: HTTP
+      VpcId: !Ref VpcId
+
+  WordpressLBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: Forward
+          TargetGroupArn: !Ref WordpressLBTargetGroup
+      LoadBalancerArn: !Ref WordpressLB
+      Port: 80
+      Protocol: HTTP
